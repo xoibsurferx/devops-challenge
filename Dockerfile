@@ -18,8 +18,6 @@ COPY prisma.config.ts ./
 # prisma.config.ts resolves this at generate time (no real DB contact required).
 ENV POSTGRES_PRISMA_URL=postgres://build:build@127.0.0.1:5432/build?schema=public
 RUN pnpm install --frozen-lockfile
-# pnpm uses symlinks for node_modules/prisma; copy dereferenced for the final stage (npm install there breaks the pnpm tree).
-RUN mkdir -p /opt && cp -Lr /app/node_modules/prisma /opt/prisma-nm
 
 FROM base AS builder
 COPY --from=deps /app/node_modules ./node_modules
@@ -29,10 +27,14 @@ ARG POSTGRES_PRISMA_URL=postgres://build:build@127.0.0.1:5432/build?schema=publi
 ENV POSTGRES_PRISMA_URL=${POSTGRES_PRISMA_URL}
 RUN pnpm exec prisma generate && pnpm run build
 
+# Self-contained `npm` tree for the Prisma CLI (incl. @prisma/config). pnpm + partial copies break resolution;
+# a dedicated install is reliable for `migrate deploy` while the app still uses the standalone `node_modules`.
+FROM base AS migrate-deps
+WORKDIR /opt/prisma-cli
+RUN npm init -y >/dev/null 2>&1 && npm install prisma@7.3.0
+
 FROM base AS production
 ARG NODE_VERSION=22
-# Pin global CLI to the same Prisma line as the app; migrate deploy is startup-only.
-RUN npm install -g prisma@7.3.0
 ENV NODE_ENV=production \
   NEXT_TELEMETRY_DISABLED=1 \
   PORT=3000 \
@@ -48,12 +50,10 @@ COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
-# Next standalone omits the `prisma` package. Use dereferenced copy from the deps stage (avoids
-# mixing npm on a pnpm/standalone `node_modules`, which can fail).
-COPY --from=deps /opt/prisma-nm /app/node_modules/prisma
+COPY --from=migrate-deps /opt/prisma-cli /opt/prisma-cli
 COPY docker/docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh \
-  && chown -R nextjs:nodejs /app
+  && chown -R nextjs:nodejs /app /opt/prisma-cli
 USER nextjs
 EXPOSE 3000
 ENTRYPOINT ["/docker-entrypoint.sh"]
