@@ -160,4 +160,7 @@ make local-down
 
 **Copy** `terraform/local-minikube/terraform.tfvars.example` to `terraform.tfvars` to tune memory, driver, or `install_argocd` (do not commit `terraform.tfvars`).
 
-**After `make local-up`:** the app is on NodePort `30080`, e.g. `http://$(minikube ip):30080`, with health at `/api/health`.
+**After `make local-up`:** the app is exposed on NodePort `30080` (e.g. `http://$(minikube ip):30080`) and health is at `/api/health`. On **macOS with the Docker driver**, that URL often **hangs in the browser** (the node IP is not always reachable from the host). Use either:
+
+- `minikube service nextjs -n devops-challenge --url` (prints a working URL, or add `--` to open a browser if supported), or
+- `kubectl -n devops-challenge port-forward svc/nextjs 3000:80` and open `http://127.0.0.1:3000` (and `/api/health` there).

@@ -89,6 +89,9 @@ if [[ "$SKIP_KUSTOMIZE" != "true" ]]; then
   IP=$(minikube -p "$MINIKUBE_PROFILE" ip 2>/dev/null || true)
   if [[ -n "${IP:-}" ]]; then
     log "App (NodePort 30080): http://$IP:30080  health: /api/health"
+    log "If the browser hangs or never loads (common: minikube + Docker Desktop on macOS), use one of:"
+    log "  minikube -p \"$MINIKUBE_PROFILE\" service nextjs -n devops-challenge --url"
+    log "  kubectl -n devops-challenge port-forward svc/nextjs 3000:80  # then http://127.0.0.1:3000  and  http://127.0.0.1:3000/api/health"
   fi
   if kubectl get ns argocd &>/dev/null; then
     log "Argo CD UI: kubectl port-forward svc/argocd-server -n argocd 8888:443"
