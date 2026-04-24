@@ -120,7 +120,7 @@ docker run --rm -e POSTGRES_PRISMA_URL="$POSTGRES_PRISMA_URL" -p 3000:3000 devop
 
 All manifests live under **`kustomize/`**.
 
-**App stack** (`kustomize/app/`): the **base** includes in-cluster PostgreSQL, the Next.js app, a PodDisruptionBudget, and hardened pod defaults. The **local** overlay uses image tag `…:local` and **NodePort 30080**. The **production** overlay adds an HPA (assumes `metrics-server`) and pins the image to `…:main` (override with your CD process).
+**App stack** (`kustomize/app/`): the **base** includes in-cluster PostgreSQL, the Next.js app, a PodDisruptionBudget, and hardened pod defaults. The **local** overlay uses **NodePort 30080** and pulls the app as `docker.io/xoibsurferx/devops-challenge:latest` (Docker Hub; `imagePullPolicy: Always` in the overlay). The **production** overlay adds an HPA (assumes `metrics-server`) and pins the image to `…:main` (override with your CD process).
 
 **Argo CD** (`kustomize/argocd/`): **base** has `AppProject` + `Application` (default app path is the production overlay). The **local** / **production** `argocd` overlays choose which app overlay to sync. Edit `kustomize/argocd/base/application.yaml` if the Git `repoURL` or `targetRevision` should differ, then `kubectl apply -k` the matching `kustomize/argocd/overlays/...`. With Argo running: `kubectl port-forward svc/argocd-server -n argocd 8888:443` and the initial `admin` password from `kubectl -n argocd get secret argocd-initial-admin-secret -o go-template='{{.data.password|base64decode}}'`. Private Git remotes [need credentials in Argo](https://argo-cd.readthedocs.io/en/stable/user-guide/private-repositories/).
 
@@ -137,7 +137,7 @@ kubectl kustomize kustomize/argocd/overlays/production
 ### Local cluster: Terraform + one-command up / down
 
 - **`terraform/local-minikube`**: `null_resource` + `local-exec` to run `minikube start`, enable addons, optionally `kubectl apply` the upstream Argo CD install manifest. **Destroy** runs `minikube delete` for the profile.
-- **Scripts** wrap `terraform init/apply/destroy`, `minikube image build`, and `kubectl apply -k` for the app’s local overlay.
+- **Scripts** wrap `terraform init/apply/destroy` and `kubectl apply -k` for the app’s local overlay; the app image is pulled from Docker Hub by default (optional `--local-image` to build a tag in-repo for advanced use).
 
 **Prerequisites:** [minikube](https://minikube.sigs.k8s.io/docs/start/), `kubectl`, [Terraform](https://www.terraform.io/) **≥ 1.3** (and Docker for the minikube driver you use, if applicable).
 
@@ -149,7 +149,7 @@ make local-up
 
 # Optional flags
 #   ./scripts/local-up.sh --skip-terraform   # cluster already running
-#   ./scripts/local-up.sh --skip-build
+#   ./scripts/local-up.sh --local-image      # build/load an image in-repo (optional; default: Hub :latest)
 #   ./scripts/local-up.sh --skip-kustomize
 
 # Tear down (minikube delete via terraform)

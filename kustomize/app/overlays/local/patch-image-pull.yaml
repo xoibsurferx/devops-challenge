@@ -1,0 +1,12 @@
+# Use the :latest tag from Docker Hub, not a stale local cache.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nextjs
+  namespace: devops-challenge
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          imagePullPolicy: Always

@@ -1,4 +1,4 @@
-# Minikube: Application syncs kustomize/app/overlays/local (NodePort, :local image) from Git.
+# Minikube: Application syncs kustomize/app/overlays/local (NodePort, Hub :latest) from Git.
 # Base default is production; this overlay patches spec.source.path only.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization

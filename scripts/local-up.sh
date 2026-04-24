@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# Terraform bring-up (minikube + addons + Argo CD), then build the app image and apply Kustomize (local app overlay).
+# Terraform (minikube + addons + Argo CD), then kubectl apply local app overlay.
+# The app image is docker.io/xoibsurferx/devops-challenge:latest from Docker Hub (see kustomize). Optional --local-image builds from this repo.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TF_DIR="${TF_DIR:-"$ROOT_DIR/terraform/local-minikube"}"
 MINIKUBE_PROFILE="${MINIKUBE_PROFILE:-minikube}"
+# Only used with --local-image; tag is separate from the :latest Kustomize default
 IMAGE_NAME="${IMAGE_NAME:-docker.io/xoibsurferx/devops-challenge:local}"
 KUSTOMIZE_APP_DIR="${KUSTOMIZE_APP_DIR:-"$ROOT_DIR/kustomize/app/overlays/local"}"
 SKIP_TERRAFORM="${SKIP_TERRAFORM:-false}"
-SKIP_BUILD="${SKIP_BUILD:-false}"
+BUILD_LOCAL_IMAGE="${BUILD_LOCAL_IMAGE:-false}"
 SKIP_KUSTOMIZE="${SKIP_KUSTOMIZE:-false}"
 
 log() { printf '==> %s\n' "$*"; }
@@ -16,19 +18,23 @@ log() { printf '==> %s\n' "$*"; }
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-terraform) SKIP_TERRAFORM=true; shift ;;
-    --skip-build) SKIP_BUILD=true; shift ;;
+    --local-image) BUILD_LOCAL_IMAGE=true; shift ;;
     --skip-kustomize) SKIP_KUSTOMIZE=true; shift ;;
     -h|--help)
       echo "Usage: $0 [options]"
       echo "  --skip-terraform  Assume cluster already exists; skip terraform apply"
-      echo "  --skip-build     Skip minikube image build (image must exist on the node)"
-      echo "  --skip-kustomize  Skip kubectl apply -k (only terraform + build)"
-      echo "  Env: TF_DIR, MINIKUBE_PROFILE, IMAGE_NAME, KUSTOMIZE_APP_DIR"
+      echo "  --local-image     Build and load an image from the repo (tag IMAGE_NAME, default :local) instead of using docker.io/.../latest from Hub"
+      echo "  --skip-kustomize  Skip kubectl apply -k (terraform and optional --local-image only)"
+      echo "  Env: TF_DIR, MINIKUBE_PROFILE, IMAGE_NAME, KUSTOMIZE_APP_DIR, MINIKUBE_DRIVER, BUILD_LOCAL_IMAGE=1 (same as --local-image)"
       exit 0
       ;;
     *) log "Unknown option: $1"; exit 1 ;;
   esac
 done
+
+if [[ "${BUILD_LOCAL_IMAGE}" == "1" || "${BUILD_LOCAL_IMAGE}" == "true" ]]; then
+  BUILD_LOCAL_IMAGE=true
+fi
 
 for c in minikube kubectl terraform; do
   command -v "$c" >/dev/null 2>&1 || { log "Required command not found: $c"; exit 1; }
@@ -50,11 +56,28 @@ else
   log "Skipping terraform (--skip-terraform)"
 fi
 
-if [[ "$SKIP_BUILD" != "true" ]]; then
-  log "minikube image build: $IMAGE_NAME"
-  minikube -p "$MINIKUBE_PROFILE" image build -t "$IMAGE_NAME" -f "$ROOT_DIR/Dockerfile" "$ROOT_DIR"
+# Default: kustomize uses docker.io/xoibsurferx/devops-challenge:latest from Docker Hub. Opt-in: build a tag in-repo and you must
+# kustomize edit the overlay to that tag, or use a separate image override — here we only build/load a tag (default :local) for advanced use.
+if [[ "$BUILD_LOCAL_IMAGE" == "true" ]]; then
+  log "Local image build: $IMAGE_NAME (override the local overlay to use this tag if you want the deployment to use it)"
+  MK_DRIVER="${MINIKUBE_DRIVER:-$(minikube -p "$MINIKUBE_PROFILE" config get driver 2>/dev/null || true)}"
+  if [[ "$MK_DRIVER" == "docker" ]]; then
+    command -v docker &>/dev/null || { log "docker CLI is required for minikube with --driver=docker"; exit 1; }
+    (cd "$ROOT_DIR" && docker build -t "$IMAGE_NAME" -f Dockerfile .)
+  elif command -v docker &>/dev/null; then
+    if eval "$(minikube -p "$MINIKUBE_PROFILE" docker-env)"; then
+      (cd "$ROOT_DIR" && docker build -t "$IMAGE_NAME" -f Dockerfile .)
+    else
+      log "minikube docker-env not available; host docker build + minikube image load: $IMAGE_NAME (driver=${MK_DRIVER:-?})"
+      docker build -t "$IMAGE_NAME" -f "$ROOT_DIR/Dockerfile" "$ROOT_DIR"
+      minikube -p "$MINIKUBE_PROFILE" image load --daemon --overwrite "$IMAGE_NAME"
+    fi
+  else
+    log "minikube image build (no docker CLI; relative context): $IMAGE_NAME"
+    (cd "$ROOT_DIR" && minikube -p "$MINIKUBE_PROFILE" image build -t "$IMAGE_NAME" -f Dockerfile .)
+  fi
 else
-  log "Skipping image build (ensure the cluster can resolve $IMAGE_NAME; use minikube image load or build)"
+  log "App image: docker.io/xoibsurferx/devops-challenge:latest (Docker Hub; not building locally). Ensure the cluster can reach registry-1.docker.io if running a fresh node."
 fi
 
 if [[ "$SKIP_KUSTOMIZE" != "true" ]]; then

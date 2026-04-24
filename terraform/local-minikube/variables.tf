@@ -18,8 +18,8 @@ variable "minikube_cpus" {
 
 variable "minikube_driver" {
   type        = string
-  description = "minikube --driver; leave empty to use the default for your OS."
-  default     = ""
+  description = "minikube --driver. Use \"docker\" on macOS (Docker Desktop) to avoid a legacy VirtualBox profile. Override e.g. kvm2 on Linux if needed."
+  default     = "docker"
 }
 
 variable "enable_metrics_server" {

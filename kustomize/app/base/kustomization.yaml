@@ -17,5 +17,8 @@ images:
   - name: devops-challenge-app
     newName: docker.io/xoibsurferx/devops-challenge
     newTag: latest
-commonLabels:
-  app.kubernetes.io/part-of: devops-challenge
+labels:
+  - includeSelectors: true
+    includeTemplates: true
+    pairs:
+      app.kubernetes.io/part-of: devops-challenge
