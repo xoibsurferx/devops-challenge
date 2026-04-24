@@ -18,9 +18,12 @@ spec:
         app.kubernetes.io/name: postgres
         app.kubernetes.io/component: database
     spec:
+      # Volume owned by the postgres GID; kubelet chowns the PVC. postgres:17-alpine uses user 70.
       securityContext:
         seccompProfile:
           type: RuntimeDefault
+        fsGroup: 70
+        fsGroupChangePolicy: "OnRootMismatch"
       containers:
         - name: postgres
           image: postgres:17-alpine
@@ -64,12 +67,20 @@ spec:
             limits:
               cpu: 500m
               memory: 1Gi
+          # Drop-all blocks CAP_CHOWN; the image entrypoint must chown/chmod data + /var/run (see docker-library/postgres).
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false
             capabilities:
               drop:
                 - ALL
+              add:
+                - CHOWN
+                - DAC_OVERRIDE
+                - FOWNER
+                - SETGID
+                - SETUID
+                - SETPCAP
       volumes:
         - name: data
           persistentVolumeClaim:
