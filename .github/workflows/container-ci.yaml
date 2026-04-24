@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Kustomize build
         run: |
           set -euo pipefail
@@ -45,7 +45,7 @@ jobs:
       security-events: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -62,7 +62,7 @@ jobs:
 
       - name: Trivy (SARIF → Code Scanning tab, non-failing)
         id: trivy_sarif
-        uses: aquasecurity/trivy-action@0.33.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.TRIVY_LOCAL }}
           format: sarif
@@ -72,7 +72,7 @@ jobs:
           exit-code: "0"
 
       - name: Trivy (table — CRITICAL only; fail job for strict gating)
-        uses: aquasecurity/trivy-action@0.33.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.TRIVY_LOCAL }}
           format: table
@@ -82,7 +82,7 @@ jobs:
 
       - name: Upload Trivy SARIF to Code Scanning
         if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results.sarif
         continue-on-error: true
