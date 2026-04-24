@@ -1,3 +1,7 @@
+# Merge automation: when a PR merges to `main`, GitHub emits a *push* to `main` (merge commit).
+# This workflow runs on that push. `dorny/paths-filter` diffs `before`..`after` for that event,
+# so the merged PR files are in scope. If any image-relevant path changed, `build-scan-push` runs;
+# if not (e.g. docs only), the image job is skipped. Tags `v*` and `workflow_dispatch` always build.
 name: Container build, scan, and push
 
 on:
@@ -6,10 +10,21 @@ on:
     tags: ["v*"]
   pull_request:
     branches: [main]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      extra_tag:
+        description: "Optional extra Docker image tag (in addition to run number / sha / main or semver on tag push)."
+        required: false
+        type: string
+        default: ""
+
+# PR / push to main: runs kustomize + (only if image-relevant files changed) build+scan+push
+# Version tags and manual runs: always run build+scan+push
+
+run-name: "container-ci ${{ github.event_name }} @ ${{ github.ref_name }}"
 
 concurrency:
-  group: container-ci-${{ github.workflow }}-${{ github.ref }}
+  group: container-ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 env:
@@ -34,12 +49,91 @@ jobs:
           cd - >/dev/null
           for d in kustomize/app/overlays/local kustomize/app/overlays/production kustomize/argocd/overlays/local kustomize/argocd/overlays/production; do
             echo "kustomize build $d"
-            kustomize build "$d" >/dev/null
+            lines=$(kustomize build "$d" 2>&1 | wc -l)
+            echo "  -> ok (${lines} lines of YAML)"
           done
 
-  build-scan-push:
-    needs: kustomize
+  # Decide if anything that affects the Docker image changed (skip on tag/manual; those always build).
+  image-gate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      build: ${{ steps.gate.outputs.build }}
+      reason: ${{ steps.gate.outputs.reason }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: List changed paths
+        if: |
+          !(github.event_name == 'workflow_dispatch' ||
+            startsWith(github.ref, 'refs/tags/'))
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            image:
+              - "Dockerfile"
+              - ".dockerignore"
+              - "docker/**"
+              - "app/**"
+              - "components/**"
+              - "lib/**"
+              - "prisma/**"
+              - "public/**"
+              - "prisma.config.ts"
+              - "package.json"
+              - "pnpm-lock.yaml"
+              - "next.config.*"
+              - "tsconfig.json"
+              - "postcss.config.*"
+              - "tailwind.*"
+
+      - name: Set build
+        id: gate
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || \
+             echo "${{ github.ref }}" | grep -qE '^refs/tags/v' ; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "reason=manual or version tag" >> "$GITHUB_OUTPUT"
+          elif [ "x${{ steps.filter.outputs.image }}" = "xtrue" ] ; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "reason=image paths changed" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "reason=image-relevant files unchanged" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Job summary (gate)
+        if: always()
+        run: |
+          {
+            echo "### Image build gate"
+            echo ""
+            echo "- **Event:** \`${{ github.event_name }}\` — **ref:** \`${{ github.ref }}\` — **run:** [${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+            echo "- **Build image job:** \`${{ steps.gate.outputs.build }}\` — ${{ steps.gate.outputs.reason }}"
+            echo ""
+            echo "Merging a PR to \`main\` is a **push** to \`main\` on the merge commit; this run’s diff is \`before\` → \`after\` for that push, so the merged PR is included. No second workflow is required."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Only reference `steps.filter` on events where the filter step actually ran.
+      - name: Job summary (paths-filter)
+        if: always() && (github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')))
+        run: |
+          echo "- **paths-filter \`image\`:** \`${{ steps.filter.outputs.image }}\` (true = at least one path under Dockerfile, \`app/\`, lockfiles, etc. changed in this run’s diff)" >> "$GITHUB_STEP_SUMMARY"
+
+  build-scan-push:
+    needs: [kustomize, image-gate]
+    if: needs.image-gate.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    env:
+      DOCKER_BUILDKIT: 1
+      # Stream BuildKit output line-by-line in the Actions log (default “auto” often buffers).
+      BUILDKIT_PROGRESS: plain
     permissions:
       contents: read
       security-events: write
@@ -49,6 +143,16 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Job summary (this run)
+        run: |
+          {
+            echo "### Build, scan, push"
+            echo "- **Ref:** \`${{ github.ref }}\`  **Event:** \`${{ github.event_name }}\`  **SHA:** \`${{ github.sha }}\`"
+            echo "- **Gate:** build=${{ needs.image-gate.outputs.build }} — ${{ needs.image-gate.outputs.reason }}"
+            echo ""
+            echo "Build and push steps use \`BUILDKIT_PROGRESS=plain\` so layer progress streams in the log. Trivy is configured with \`hide-progress: false\` so scan output is visible as it runs."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build image (load for Trivy)
         uses: docker/build-push-action@v6
@@ -60,7 +164,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Trivy (SARIF → Code Scanning tab, non-failing)
+      - name: Trivy (SARIF, non-failing)
         id: trivy_sarif
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -68,20 +172,20 @@ jobs:
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH,MEDIUM
-          # Never fail the job: SARIF upload is the signal to fix issues over time
           exit-code: "0"
+          hide-progress: "false"
 
-      - name: Trivy (table — CRITICAL only; fail job for strict gating)
+      - name: Trivy (table, CRITICAL)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.TRIVY_LOCAL }}
           format: table
           severity: CRITICAL
-          # "0" = do not block pushes (base image OS noise is common). Use "1" to fail on any CRITICAL, or add .trivyignore
           exit-code: "0"
+          hide-progress: "false"
 
-      - name: Upload Trivy SARIF to Code Scanning
-        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - name: Upload Trivy SARIF
+        if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results.sarif
@@ -89,8 +193,8 @@ jobs:
 
       - name: Docker Hub login
         if: >
-          github.event_name == 'push' &&
-          (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+          github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+          || github.event_name == 'workflow_dispatch'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -98,8 +202,8 @@ jobs:
 
       - name: Docker metadata
         if: >
-          github.event_name == 'push' &&
-          (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+          github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+          || github.event_name == 'workflow_dispatch'
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -108,13 +212,15 @@ jobs:
           tags: |
             type=ref,event=tag
             type=sha,prefix=,format=short
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+            type=raw,value=build-${{ github.run_number }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=${{ github.event.inputs.extra_tag }},enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.extra_tag != '' }}
 
       - name: Push to Docker Hub
         if: >
-          github.event_name == 'push' &&
-          (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+          (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')))
+          || github.event_name == 'workflow_dispatch'
         uses: docker/build-push-action@v6
         with:
           context: .
