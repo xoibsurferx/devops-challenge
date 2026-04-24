@@ -45,7 +45,8 @@ COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/prisma ./prisma
-COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
+# No prisma.config.ts: global `prisma migrate deploy` would load it and need `prisma` from
+# `node_modules` (omitted in Next.js standalone). Schema + default migrations path suffice.
 COPY docker/docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh \
   && chown -R nextjs:nodejs /app
