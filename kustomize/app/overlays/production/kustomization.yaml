@@ -1,0 +1,12 @@
+# Use with a cluster that has metrics-server; pin image tags by CI or kustomize edit.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+  - hpa.yaml
+# Optional: add NetworkPolicy once your CNI and ingress paths are known.
+# Images: pin by CI/Argo Image Updater, or the pipeline that commits the tag.
+images:
+  - name: devops-challenge-app
+    newName: docker.io/xoibsurferx/devops-challenge
+    newTag: main

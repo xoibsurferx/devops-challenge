@@ -1,0 +1,9 @@
+# Minikube or local image tag : use the local app overlay instead of production.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: devops-challenge
+  namespace: argocd
+spec:
+  source:
+    path: kustomize/app/overlays/local

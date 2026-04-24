@@ -1,0 +1,38 @@
+# Sync from your Git default branch. Apply with: kubectl apply -k kustomize/argocd/overlays/{local,production}
+# If the repo name differs, edit repoURL. path is always relative to the repository root.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: devops-challenge
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: devops-challenge
+  source:
+    repoURL: https://github.com/xoibsurferx/devops-challenge.git
+    targetRevision: main
+    path: kustomize/app/overlays/production
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: devops-challenge
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - PruneLast=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  ignoreDifferences:
+    - group: autoscaling
+      kind: HorizontalPodAutoscaler
+      jsonPointers:
+        - /status
+        - /metadata/annotations

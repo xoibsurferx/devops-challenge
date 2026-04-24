@@ -1,0 +1,8 @@
+# Point Argo CD at the production Kustomize overlay (HPA, main image tag, etc.).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: argocd
+resources:
+  - ../../base
+patches:
+  - path: patch-application.yaml

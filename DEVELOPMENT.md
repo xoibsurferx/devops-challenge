@@ -69,7 +69,11 @@ The app will be available at [http://localhost:3000](http://localhost:3000).
 │   └── migrations/       # SQL migrations
 ├── prisma.config.ts      # Prisma configuration
 ├── docker-compose.yaml   # PostgreSQL + Next.js services
-└── Dockerfile            # Production container (you need to create this)
+├── Dockerfile            # Multi-stage production image (Next.js standalone + Prisma)
+├── docker/               # Container entrypoint (migrations, then `node server.js`)
+├── kustomize/            # Kustomize: app (base + overlays) and argocd (base + overlays)
+├── terraform/            # local-minikube: minikube, addons, optional Argo CD install
+└── scripts/              # local-up.sh, local-down.sh
 ```
 
 ## Environment Variables
@@ -105,6 +109,55 @@ This project uses Prisma 7's driver adapter architecture with `node-postgres` fo
 # Start PostgreSQL only
 docker compose up -d postgres
 
-# Start full stack (requires Dockerfile)
-docker compose up -d
+# Build and run the production image locally (expects Postgres on host or compose)
+cp .env.example .env
+export POSTGRES_PRISMA_URL="postgres://postgres:postgres@host.docker.internal:5432/currencies?schema=public"  # or from .env
+docker build -t devops-challenge:local .
+docker run --rm -e POSTGRES_PRISMA_URL="$POSTGRES_PRISMA_URL" -p 3000:3000 devops-challenge:local
 ```
+
+## Kubernetes and GitOps
+
+All manifests live under **`kustomize/`**.
+
+**App stack** (`kustomize/app/`): the **base** includes in-cluster PostgreSQL, the Next.js app, a PodDisruptionBudget, and hardened pod defaults. The **local** overlay uses image tag `…:local` and **NodePort 30080**. The **production** overlay adds an HPA (assumes `metrics-server`) and pins the image to `…:main` (override with your CD process).
+
+**Argo CD** (`kustomize/argocd/`): **base** has `AppProject` + `Application` (default app path is the production overlay). The **local** / **production** `argocd` overlays choose which app overlay to sync. Edit `kustomize/argocd/base/application.yaml` if the Git `repoURL` or `targetRevision` should differ, then `kubectl apply -k` the matching `kustomize/argocd/overlays/...`. With Argo running: `kubectl port-forward svc/argocd-server -n argocd 8888:443` and the initial `admin` password from `kubectl -n argocd get secret argocd-initial-admin-secret -o go-template='{{.data.password|base64decode}}'`. Private Git remotes [need credentials in Argo](https://argo-cd.readthedocs.io/en/stable/user-guide/private-repositories/).
+
+**Secrets:** base app manifests include **placeholder** connection strings. For real production, use Sealed Secrets, External Secrets, or a secret manager, and **never** commit real credentials.
+
+```bash
+# Render (no cluster)
+kubectl kustomize kustomize/app/overlays/local
+kubectl kustomize kustomize/app/overlays/production
+kubectl kustomize kustomize/argocd/overlays/local
+kubectl kustomize kustomize/argocd/overlays/production
+```
+
+### Local cluster: Terraform + one-command up / down
+
+- **`terraform/local-minikube`**: `null_resource` + `local-exec` to run `minikube start`, enable addons, optionally `kubectl apply` the upstream Argo CD install manifest. **Destroy** runs `minikube delete` for the profile.
+- **Scripts** wrap `terraform init/apply/destroy`, `minikube image build`, and `kubectl apply -k` for the app’s local overlay.
+
+**Prerequisites:** [minikube](https://minikube.sigs.k8s.io/docs/start/), `kubectl`, [Terraform](https://www.terraform.io/) **≥ 1.3** (and Docker for the minikube driver you use, if applicable).
+
+```bash
+# Bring up cluster (terraform apply), build image on minikube, deploy app
+make local-up
+# or:  ./scripts/local-up.sh
+#       TF_APPLY_AUTO=1 ./scripts/local-up.sh   # terraform apply -auto-approve
+
+# Optional flags
+#   ./scripts/local-up.sh --skip-terraform   # cluster already running
+#   ./scripts/local-up.sh --skip-build
+#   ./scripts/local-up.sh --skip-kustomize
+
+# Tear down (minikube delete via terraform)
+make local-down
+# or:  ./scripts/local-down.sh
+#       ./scripts/local-down.sh -auto-approve
+```
+
+**Copy** `terraform/local-minikube/terraform.tfvars.example` to `terraform.tfvars` to tune memory, driver, or `install_argocd` (do not commit `terraform.tfvars`).
+
+**After `make local-up`:** the app is on NodePort `30080`, e.g. `http://$(minikube ip):30080`, with health at `/api/health`.

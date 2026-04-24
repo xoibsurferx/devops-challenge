@@ -7,6 +7,13 @@ node_modules
 # Ignore .env file
 .env
 
-# Ignore .next and .turbo folders
+# Ignore .next and .turbo folders (rebuilt in Docker)
 .next
 .turbo
+*.md
+.github
+kustomize
+terraform
+docs
+**/*.test.ts
+**/*.spec.ts

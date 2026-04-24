@@ -1,0 +1,11 @@
+# Minikube / local cluster: NodePort for easy access, image tag `local` (load via minikube image build).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - path: service-nodeport.yaml
+images:
+  - name: devops-challenge-app
+    newName: docker.io/xoibsurferx/devops-challenge
+    newTag: local

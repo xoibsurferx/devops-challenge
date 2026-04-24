@@ -1,0 +1,127 @@
+name: Container build, scan, and push
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: container-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: devops-challenge
+  REGISTRY: docker.io
+  DOCKERHUB_USER: xoibsurferx
+  TRIVY_LOCAL: trivy-scan:local
+  KUSTOMIZE_VERSION: 5.4.3
+
+jobs:
+  kustomize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Kustomize build
+        run: |
+          set -euo pipefail
+          cd /tmp
+          curl -sSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" | tar -xz
+          sudo install -m 0755 kustomize /usr/local/bin/kustomize
+          cd - >/dev/null
+          for d in kustomize/app/overlays/local kustomize/app/overlays/production kustomize/argocd/overlays/local kustomize/argocd/overlays/production; do
+            echo "kustomize build $d"
+            kustomize build "$d" >/dev/null
+          done
+
+  build-scan-push:
+    needs: kustomize
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (load for Trivy)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          tags: ${{ env.TRIVY_LOCAL }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trivy (SARIF → Code Scanning tab, non-failing)
+        id: trivy_sarif
+        uses: aquasecurity/trivy-action@0.33.0
+        with:
+          image-ref: ${{ env.TRIVY_LOCAL }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          # Never fail the job: SARIF upload is the signal to fix issues over time
+          exit-code: "0"
+
+      - name: Trivy (table — CRITICAL only; fail job for strict gating)
+        uses: aquasecurity/trivy-action@0.33.0
+        with:
+          image-ref: ${{ env.TRIVY_LOCAL }}
+          format: table
+          severity: CRITICAL
+          # "0" = do not block pushes (base image OS noise is common). Use "1" to fail on any CRITICAL, or add .trivyignore
+          exit-code: "0"
+
+      - name: Upload Trivy SARIF to Code Scanning
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+        continue-on-error: true
+
+      - name: Docker Hub login
+        if: >
+          github.event_name == 'push' &&
+          (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Docker metadata
+        if: >
+          github.event_name == 'push' &&
+          (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.REGISTRY }}/${{ env.DOCKERHUB_USER }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=tag
+            type=sha,prefix=,format=short
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Push to Docker Hub
+        if: >
+          github.event_name == 'push' &&
+          (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64

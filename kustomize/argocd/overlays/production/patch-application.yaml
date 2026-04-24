@@ -1,0 +1,9 @@
+# Strategic merge: sync production app stack from this repo.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: devops-challenge
+  namespace: argocd
+spec:
+  source:
+    path: kustomize/app/overlays/production

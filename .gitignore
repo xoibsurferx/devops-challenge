@@ -40,3 +40,10 @@ yarn-error.log*
 
 prisma/generated
 .pnpm-store
+
+# Terraform (local minikube)
+terraform/**/.terraform/
+terraform/**/*.tfstate
+terraform/**/*.tfstate.*
+terraform/**/terraform.tfvars
+!terraform/**/terraform.tfvars.example
